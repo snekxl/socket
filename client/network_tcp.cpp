@@ -1,67 +1,109 @@
-#include "network_tcp.h"
-#include <ws2tcpip.h>
+#include "network_udp.h"
 #include <iostream>
+#include <fstream>
+
+#pragma comment(lib, "ws2_32.lib")
 
 using namespace std;
 
-SOCKET connectTCP(const string& ip, int port) {
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        cerr << "Loi: Khong the khoi tao Winsock!" << endl;
-        return INVALID_SOCKET;
+// Hàm tính Checksum đơn giản: cộng dồn tất cả các byte lại
+uint16_t calculateChecksum(const RDTPacket& pkt) {
+    uint32_t sum = 0;
+    sum += pkt.header.seq_num;
+    sum += pkt.header.ack_num;
+    sum += pkt.header.flags;
+    sum += pkt.header.payload_len;
+    for (int i = 0; i < pkt.header.payload_len; ++i) {
+        sum += (uint8_t)pkt.payload[i];
     }
+    // Gộp phần dư để vừa khít 16 bit
+    while (sum >> 16) {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    return (uint16_t)~sum;
+}
 
-    SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+SOCKET createUDPSocket() {
+    SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock == INVALID_SOCKET) {
-        cerr << "Loi tao socket: " << WSAGetLastError() << endl;
-        WSACleanup();
-        return INVALID_SOCKET;
+        cerr << "[-] Tao socket UDP that bai." << endl;
     }
-
-    sockaddr_in server_addr;
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(port);
-    inet_pton(AF_INET, ip.c_str(), &server_addr.sin_addr);
-
-    cout << "[TCP] Dang ket noi den Server " << ip << ":" << port << "..." << endl;
-
-    if (connect(sock, (sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
-        cerr << "-> Khong the ket noi! (Ban da bat Server chua?)" << endl;
-        closesocket(sock);      // Dọn dẹp cái đầu cắm bị lỗi
-        return INVALID_SOCKET;  // Báo về cho parser biết là mạng đã "tạch"
-    }
-    else {
-        cout << "-> Ket noi TCP thanh cong!" << endl;
-    }
-
     return sock;
-
 }
 
-string receiveTCP(SOCKET sock) {
-    if (sock == INVALID_SOCKET) return ""; // Tránh lỗi nếu chưa kết nối
+bool sendFileUDP(SOCKET udpSocket, const string& serverIP, int serverPort, const string& filePath) {
+    ifstream file(filePath, ios::binary);
+    if (!file.is_open()) return false;
 
-    char buffer[1024]; // Tạo một cái xô dung tích 1024 byte để hứng dữ liệu
-    memset(buffer, 0, sizeof(buffer)); // Rửa sạch xô trước khi dùng
+    sockaddr_in serverAddr;
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(serverPort);
+    inet_pton(AF_INET, serverIP.c_str(), &serverAddr.sin_addr);
 
-    // Đứng chờ hứng dữ liệu từ Server
-    int bytes_received = recv(sock, buffer, sizeof(buffer) - 1, 0);
+    // Đặt thời gian chờ Timeout là 1000ms (1 giây)
+    DWORD timeout = 1000;
+    setsockopt(udpSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
 
-    if (bytes_received > 0) {
-        return string(buffer); // Hứng thành công, chuyển thành chuỗi và trả về
+    uint32_t current_seq = 0; // Biến trạng thái: 0 hoặc 1 (Stop and Wait)
+    RDTPacket packet = {0};
+
+    while (file.peek() != EOF) {
+        // Đọc 1 chunk từ file
+        file.read(packet.payload, PAYLOAD_SIZE);
+        packet.header.payload_len = file.gcount();
+        packet.header.seq_num = current_seq;
+        packet.header.flags = FLAG_DATA;
+        packet.header.checksum = 0;
+        packet.header.checksum = calculateChecksum(packet);
+
+        bool ack_received = false;
+        int retries = 0;
+
+        // Vòng lặp retransmit: Gửi và chờ ACK, lỗi thì gửi lại tối đa 5 lần
+        while (!ack_received && retries < 5) {
+            sendto(udpSocket, (char*)&packet, sizeof(packet), 0, (sockaddr*)&serverAddr, sizeof(serverAddr));
+            
+            RDTPacket ack_pkt;
+            sockaddr_in fromAddr;
+            int fromLen = sizeof(fromAddr);
+            
+            int recvBytes = recvfrom(udpSocket, (char*)&ack_pkt, sizeof(ack_pkt), 0, (sockaddr*)&fromAddr, &fromLen);
+            
+            // Nhận thành công và đúng ACK
+            if (recvBytes > 0 && (ack_pkt.header.flags & FLAG_ACK) && ack_pkt.header.ack_num == current_seq) {
+                // Kiểm tra mã băm bảo vệ
+                uint16_t expected_checksum = ack_pkt.header.checksum;
+                ack_pkt.header.checksum = 0;
+                if (calculateChecksum(ack_pkt) == expected_checksum) {
+                    ack_received = true;
+                    current_seq = 1 - current_seq; // Lật bit thứ tự 0 <-> 1
+                }
+            } else {
+                cout << "[!] Timeout hoac loi goi tin. Dang gui lai (Lan " << retries + 1 << ")...\n";
+                retries++;
+            }
+        }
+        
+        if (!ack_received) {
+            cerr << "[-] Ngat ket noi: Khong nhan duoc phan hoi tu Server.\n";
+            return false;
+        }
     }
-    else if (bytes_received == 0) {
-        cout << "[TCP] Server da chu dong dong ket noi." << endl;
-    }
-    else {
-        cerr << "[TCP] Loi nhan du lieu: " << WSAGetLastError() << endl;
-    }
-    return "";
+
+    // Gửi gói FIN báo kết thúc
+    packet.header.flags = FLAG_FIN;
+    packet.header.payload_len = 0;
+    packet.header.checksum = 0;
+    packet.header.checksum = calculateChecksum(packet);
+    sendto(udpSocket, (char*)&packet, sizeof(packet), 0, (sockaddr*)&serverAddr, sizeof(serverAddr));
+
+    file.close();
+    cout << "[+] Da gui file hoan tat qua giao thuc tin cay (RDT)." << endl;
+    return true;
 }
 
-void cleanupTCP(SOCKET sock) {
-    if (sock != INVALID_SOCKET) {
-        closesocket(sock);
-    }
-    WSACleanup();
+// ... (Hàm receiveFileUDP mình sẽ để nguyên cấu trúc tạm thời để tránh file quá dài, khi nào Server bắt đầu ghép nối vào, mình sẽ viết tiếp logic phía hứng dữ liệu).
+
+void closeUDPSocket(SOCKET udpSocket) {
+    if (udpSocket != INVALID_SOCKET) closesocket(udpSocket);
 }
