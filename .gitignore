@@ -1,0 +1,13 @@
+# Bỏ qua các thư mục biên dịch của Visual Studio
+.vs/
+Debug/
+Release/
+x64/
+x86/
+
+# Bỏ qua các file nhị phân và file hệ thống
+*.exe
+*.obj
+*.pdb
+*.user
+*.suo
