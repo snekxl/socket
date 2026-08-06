@@ -4,10 +4,10 @@
 #include <winsock2.h>
 #include <string>
 
-// Chạy vòng lặp nhập lệnh từ bàn phím
-void runCommandParser(SOCKET control_sock);
+// Chạy vòng lặp nhập lệnh từ bàn phím, truyền thêm serverIP cho luồng UDP
+void runCommandParser(SOCKET control_sock, const std::string& serverIP);
 
-// Hàm phụ trợ gửi lệnh (có tự động thêm \r\n theo chuẩn FTP)
+// Hàm phụ trợ gửi lệnh
 bool sendCommand(SOCKET sock, const std::string& cmd);
 
 // Hàm phụ trợ nhận phản hồi từ Server
