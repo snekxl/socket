@@ -134,20 +134,92 @@ int main() {
             string response = "";
 
             // --- ĐỊNH TUYẾN CÁC LỆNH ---
-            if (request.find("QUIT") == 0) {
-                response = "221 Goodbye. Hen gap lai!\r\n";
-                send(client_sock, response.c_str(), response.length(), 0);
-                break;
-            }
-            else if (request.find("USER") == 0) {
-                response = "331 Username OK, need password.\r\n";
-                send(client_sock, response.c_str(), response.length(), 0);
-            }
-            else if (request.find("PASS") == 0) {
-                response = "230 User logged in, proceed.\r\n";
-                send(client_sock, response.c_str(), response.length(), 0);
-            }
-            else if (request.find("RETR") == 0) {
+            // --- ĐỊNH TUYẾN 28 LỆNH FTP TRONG VÒNG LẶP RECV CỦA SERVER ---
+
+string cmd = request.substr(0, request.find(' ')); // Tách lấy từ khóa lệnh (vd: PWD, STOR)
+string arg = "";
+if (request.find(' ') != string::npos) {
+    arg = request.substr(request.find(' ') + 1);
+    arg.erase(arg.find_last_not_of(" \n\r\t") + 1); // Xóa khoảng trắng thừa
+}
+
+// 1. NHÓM QUẢN LÝ PHIÊN (Đã xong)
+if (cmd == "QUIT") {
+    response = "221 Goodbye. Hen gap lai!\r\n";
+    send(client_sock, response.c_str(), response.length(), 0);
+    break; // Thoát vòng lặp
+}
+else if (cmd == "USER") {
+    response = "331 Username OK, need password.\r\n";
+    send(client_sock, response.c_str(), response.length(), 0);
+}
+else if (cmd == "PASS") {
+    response = "230 User logged in, proceed.\r\n";
+    send(client_sock, response.c_str(), response.length(), 0);
+}
+else if (cmd == "NOOP") {
+    response = "200 Command okay.\r\n";
+    send(client_sock, response.c_str(), response.length(), 0);
+}
+
+// 2. NHÓM ĐIỀU HƯỚNG THƯ MỤC
+else if (cmd == "PWD") {
+    // Dùng thư viện filesystem của C++17 để lấy thư mục hiện tại
+    string current_path = std::filesystem::current_path().string();
+    response = "257 \"" + current_path + "\" is the current directory.\r\n";
+    send(client_sock, response.c_str(), response.length(), 0);
+}
+else if (cmd == "CWD") {
+    // Logic: Kiểm tra xem thư mục arg có tồn tại không, nếu có thì chdir() tới đó
+    response = "250 Requested file action okay, completed.\r\n"; // Tạm thời trả về OK
+    send(client_sock, response.c_str(), response.length(), 0);
+}
+else if (cmd == "CDUP") { /* Chuyển lên thư mục cha */ }
+else if (cmd == "MKD")  { /* Tạo thư mục mới dựa trên arg */ }
+else if (cmd == "RMD")  { /* Xóa thư mục rỗng */ }
+
+// 3. NHÓM THAO TÁC FILE CƠ BẢN
+else if (cmd == "DELE") { /* Xóa file arg */ }
+else if (cmd == "RNFR") { /* Lưu lại tên file cũ cần đổi tên */ }
+else if (cmd == "RNTO") { /* Đổi tên file cũ thành tên arg mới */ }
+
+// 4. NHÓM TRUYỀN TẢI FILE (KÊNH UDP)
+else if (cmd == "RETR") {
+    // Logic hiện tại của bạn đã làm rất tốt phần này
+    response = "150 File okay. Dang mo kenh UDP...\r\n";
+    send(client_sock, response.c_str(), response.length(), 0);
+    // ... (Gọi hàm sendFileUDP như code cũ) ...
+}
+else if (cmd == "STOR") {
+    response = "150 Khach hang san sang gui file, mo kenh UDP...\r\n";
+    send(client_sock, response.c_str(), response.length(), 0);
+    // Logic: Gọi hàm receiveFileUDP (Cần code thêm hàm này ở Server)
+}
+else if (cmd == "STOU") { /* Upload và Server tự sinh tên file độc nhất */ }
+else if (cmd == "APPE") { /* Ghi nối tiếp dữ liệu vào file đã có */ }
+else if (cmd == "LIST" || cmd == "NLST") {
+    response = "150 Mo kenh UDP de gui danh sach thu muc...\r\n";
+    send(client_sock, response.c_str(), response.length(), 0);
+    // Logic: Đọc danh sách file trong thư mục, đóng gói thành chuỗi văn bản, gửi qua UDP
+}
+
+// 5. NHÓM THÔNG TIN & CẤU HÌNH TRẠNG THÁI
+else if (cmd == "SIZE") { /* Lấy kích thước file arg tính bằng byte */ }
+else if (cmd == "MDTM") { /* Lấy thời gian chỉnh sửa cuối của file arg */ }
+else if (cmd == "TYPE") { /* Set mode I (Nhị phân) hoặc A (ASCII) */ }
+else if (cmd == "MODE") { /* Set mode S, B, C */ }
+else if (cmd == "STAT") { /* Trả về trạng thái Server */ }
+else if (cmd == "HELP") { /* Trả về text hướng dẫn sử dụng */ }
+else if (cmd == "PORT") { /* Xử lý Active Mode: Phân tích tham số h1,h2,h3,h4,p1,p2 */ }
+else if (cmd == "PASV") { /* Xử lý Passive Mode: Trả về IP và Port ngẫu nhiên cho Client */ }
+else if (cmd == "HASH") { /* Code hàm MD5/SHA-256 để băm file */ }
+else if (cmd == "ABOR") { /* Cắt đứt tiến trình UDP đang chạy */ }
+
+// NẾU GÕ SAI LỆNH HOẶC CHƯA HỖ TRỢ
+else {
+    response = "502 Command not implemented.\r\n";
+    send(client_sock, response.c_str(), response.length(), 0);
+}
                 // Tách tên file
                 string filename = request.substr(5);
                 filename.erase(filename.find_last_not_of(" \n\r\t") + 1);
