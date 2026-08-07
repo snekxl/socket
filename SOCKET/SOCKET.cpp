@@ -4,6 +4,7 @@
 #include <fstream>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+namespace fs = std::filesystem;
 
 // Link với thư viện Winsock của Windows
 #pragma comment(lib, "ws2_32.lib")
@@ -78,9 +79,69 @@ bool sendFileUDP(SOCKET udp_sock, sockaddr_in client_addr, const string& filenam
             }
         }
     }
+    // =====================================================================
+// HÀM NHẬN FILE QUA UDP (DÀNH CHO LỆNH STOR)
+// =====================================================================
+bool receiveFileUDP(SOCKET udpSocket, const string& savePath) {
+    ofstream file(savePath, ios::binary);
+    if (!file.is_open()) {
+        cerr << "[-] Khong the tao file de luu: " << savePath << endl;
+        return false;
+    }
+
+    uint32_t expected_seq = 0;
+    bool is_finished = false;
+
+    // Timeout để tránh treo Server nếu Client mất mạng
+    DWORD timeout = 2000;
+    setsockopt(udpSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+
+    while (!is_finished) {
+        RDTPacket packet;
+        sockaddr_in clientAddr;
+        int clientLen = sizeof(clientAddr);
+
+        int bytes_received = recvfrom(udpSocket, (char*)&packet, sizeof(packet), 0, (sockaddr*)&clientAddr, &clientLen);
+
+        if (bytes_received > 0) {
+            uint16_t received_checksum = packet.header.checksum;
+            packet.header.checksum = 0; // Reset để tính toán lại
+
+            // Kiểm tra tính toàn vẹn và đúng thứ tự gói tin
+            if (calculateChecksum(packet) == received_checksum && packet.header.seq_num == expected_seq) {
+                
+                // Nếu là gói dữ liệu
+                if (packet.header.flags & FLAG_DATA) {
+                    file.write(packet.payload, packet.header.payload_len);
+                }
+                
+                // Nếu là cờ kết thúc FIN
+                if (packet.header.flags & FLAG_FIN) {
+                    is_finished = true;
+                }
+
+                // Gửi ACK phản hồi
+                RDTPacket ack_pkt = {0};
+                ack_pkt.header.ack_num = expected_seq;
+                ack_pkt.header.flags = FLAG_ACK;
+                ack_pkt.header.checksum = calculateChecksum(ack_pkt);
+                sendto(udpSocket, (char*)&ack_pkt, sizeof(ack_pkt), 0, (sockaddr*)&clientAddr, sizeof(clientAddr));
+
+                expected_seq = 1 - expected_seq; // Đảo bit chờ gói tiếp theo
+            }
+            // Nếu nhận nhầm gói cũ, vẫn gửi lại ACK cũ để Client khỏi luống cuống
+            else if (packet.header.seq_num != expected_seq) {
+                RDTPacket ack_pkt = {0};
+                ack_pkt.header.ack_num = 1 - expected_seq; // Báo lại ACK trước đó
+                ack_pkt.header.flags = FLAG_ACK;
+                ack_pkt.header.checksum = calculateChecksum(ack_pkt);
+                sendto(udpSocket, (char*)&ack_pkt, sizeof(ack_pkt), 0, (sockaddr*)&clientAddr, sizeof(clientAddr));
+            }
+        }
+    }
 
     file.close();
-    cout << "[UDP] HOAN TAT TRUYEN FILE!" << endl;
+    cout << "[+] Da nhan va luu file thanh cong." << endl;
     return true;
 }
 
@@ -214,6 +275,66 @@ else if (cmd == "PORT") { /* Xử lý Active Mode: Phân tích tham số h1,h2,h
 else if (cmd == "PASV") { /* Xử lý Passive Mode: Trả về IP và Port ngẫu nhiên cho Client */ }
 else if (cmd == "HASH") { /* Code hàm MD5/SHA-256 để băm file */ }
 else if (cmd == "ABOR") { /* Cắt đứt tiến trình UDP đang chạy */ }
+    else if (cmd == "PWD") {
+    string current_path = fs::current_path().string();
+    response = "257 \"" + current_path + "\" is the current directory.\r\n";
+    send(client_sock, response.c_str(), response.length(), 0);
+}
+else if (cmd == "CWD") {
+    try {
+        if (fs::exists(arg) && fs::is_directory(arg)) {
+            fs::current_path(arg);
+            response = "250 Directory successfully changed.\r\n";
+        } else {
+            response = "550 Failed to change directory. Path not found.\r\n";
+        }
+    } catch (const exception& e) {
+        response = "550 System error.\r\n";
+    }
+    send(client_sock, response.c_str(), response.length(), 0);
+}
+else if (cmd == "MKD") {
+    if (fs::create_directory(arg)) {
+        response = "257 Directory created successfully.\r\n";
+    } else {
+        response = "550 Directory creation failed (may already exist).\r\n";
+    }
+    send(client_sock, response.c_str(), response.length(), 0);
+}
+else if (cmd == "RMD") {
+    try {
+        if (fs::remove(arg)) { // Lưu ý: Hàm này chỉ xóa thư mục rỗng
+            response = "250 Directory removed successfully.\r\n";
+        } else {
+            response = "550 Remove failed (Directory not empty or not found).\r\n";
+        }
+    } catch (...) {
+        response = "550 Remove failed.\r\n";
+    }
+    send(client_sock, response.c_str(), response.length(), 0);
+}
+else if (cmd == "STOR") {
+    response = "150 Ok to send data. Dang mo kenh UDP tren cong 2122...\r\n";
+    send(client_sock, response.c_str(), response.length(), 0);
+
+    SOCKET udp_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    
+    // Mở port 2122 phía Server để ĐÓN file (Khác với RETR là mở để ĐẨY file)
+    sockaddr_in udp_server_addr;
+    udp_server_addr.sin_family = AF_INET;
+    udp_server_addr.sin_port = htons(2122);
+    udp_server_addr.sin_addr.s_addr = INADDR_ANY;
+    bind(udp_sock, (sockaddr*)&udp_server_addr, sizeof(udp_server_addr));
+
+    if (receiveFileUDP(udp_sock, arg)) {
+        string success_msg = "226 Transfer complete.\r\n";
+        send(client_sock, success_msg.c_str(), success_msg.length(), 0);
+    } else {
+        string fail_msg = "550 Transfer failed.\r\n";
+        send(client_sock, fail_msg.c_str(), fail_msg.length(), 0);
+    }
+    closesocket(udp_sock);
+}
 
 // NẾU GÕ SAI LỆNH HOẶC CHƯA HỖ TRỢ
 else {
