@@ -29,8 +29,9 @@ void runCommandParser(SOCKET control_sock, const string& serverIP) {
     cout << "=== HYBRID FTP CLIENT ===" << endl;
     cout << "[+] Da ket noi Control Channel. Nhap lenh FTP (vd: USER, CWD, RETR, STOR, QUIT)..." << endl;
 
-    // Tạo sẵn 1 socket UDP để dùng chung cho các phiên truyền file sau này
     SOCKET udpSocket = createUDPSocket();
+
+    cout << receiveReply(control_sock);
 
     while (true) {
         cout << "ftp> ";
