@@ -71,27 +71,25 @@ void runCommandParser(SOCKET control_sock, const string& serverIP) {
 
         // 3. Xử lý rẽ nhánh nếu là lệnh truyền file (RETR hoặc STOR)
         // Dựa vào mã phản hồi 150 (Mở kênh dữ liệu) từ Server
+        // 3. Xử lý rẽ nhánh nếu là lệnh CẦN MỞ KÊNH DỮ LIỆU
         if (reply.substr(0, 3) == "150") {
             if (command == "RETR" && !argument.empty()) {
                 cout << "[*] Chuan bi nhan file: " << argument << " qua UDP..." << endl;
-                
-                // Kích hoạt luồng UDP nhận file
                 receiveFileUDP(udpSocket, DATA_PORT, argument);
-                
-                // Hứng thêm phản hồi 226 Transfer complete từ TCP sau khi truyền xong
                 cout << receiveReply(control_sock);
             } 
             else if (command == "STOR" && !argument.empty()) {
                 cout << "[*] Chuan bi gui file: " << argument << " qua UDP..." << endl;
-                
-                // Kích hoạt luồng UDP đẩy file
                 sendFileUDP(udpSocket, serverIP, DATA_PORT, argument);
-                
-                // Hứng thêm phản hồi 226 Transfer complete từ TCP sau khi truyền xong
+                cout << receiveReply(control_sock);
+            }
+            else if (command == "LIST" || command == "NLST") {
+                cout << "[*] Dang nhan danh sach thu muc qua UDP..." << endl;
+                // Gọi hàm nhận chuỗi văn bản qua RDT UDP (Cần thiết kế thêm hàm nhận text)
+                // receiveTextUDP(udpSocket, DATA_PORT);
                 cout << receiveReply(control_sock);
             }
         }
-    }
     
     // Đóng kênh UDP khi thoát vòng lặp
     closeUDPSocket(udpSocket);
