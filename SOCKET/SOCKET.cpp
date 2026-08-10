@@ -534,7 +534,16 @@ int main() {
                     response = "550 File not found.\r\n";
                 }
                 send(client_sock, response.c_str(), response.length(), 0);
-            }     
+            }
+
+            else {
+                response = "502 Command not implemented.\r\n";
+                send(client_sock, response.c_str(), response.length(), 0);
+            }
+        } 
+        
+        closesocket(client_sock); 
+    }
     closesocket(server_sock);
     WSACleanup();
     return 0;
