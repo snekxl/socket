@@ -5,6 +5,10 @@
 #include <filesystem>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <chrono>
+#include <iomanip>
+#include <sstream>
+#include <wincrypt.h> // API Bảo mật mã băm nguyên bản của Windows
 
 // Bắt buộc phải link thư viện mạng của Windows
 #pragma comment(lib, "ws2_32.lib")
@@ -344,10 +348,54 @@ int main() {
                 closesocket(udp_sock);
             }
             else if (cmd == "LIST" || cmd == "NLST") {
-                response = "150 Opening ASCII mode data connection for file list...\r\n";
+                response = "150 Opening data connection for directory list...\r\n";
                 send(client_sock, response.c_str(), response.length(), 0);
-                response = "226 Transfer complete (Mocked LIST).\r\n";
+
+                // 1. Quét thư mục và ghi ra file text tạm thời
+                string temp_filename = "temp_dir_list.txt";
+                ofstream temp_file(temp_filename);
+                
+                // Nếu người dùng gõ "LIST" không có tham số thì lấy thư mục hiện tại
+                string target_dir = arg.empty() ? fs::current_path().string() : arg;
+
+                try {
+                    if (fs::exists(target_dir) && fs::is_directory(target_dir)) {
+                        for (const auto& entry : fs::directory_iterator(target_dir)) {
+                            string filename = entry.path().filename().string();
+                            
+                            if (cmd == "NLST") {
+                                // Lệnh NLST chỉ in tên file
+                                temp_file << filename << "\r\n"; 
+                            } else {
+                                // Lệnh LIST in chi tiết: Loại (Dir/File), Kích thước, Tên
+                                string type = entry.is_directory() ? "<DIR>  " : "<FILE> ";
+                                string size = entry.is_directory() ? "0" : to_string(entry.file_size());
+                                temp_file << type << "\t" << size << " bytes\t" << filename << "\r\n";
+                            }
+                        }
+                    } else {
+                        temp_file << "Directory not found.\r\n";
+                    }
+                } catch (...) { temp_file << "Access denied.\r\n"; }
+                temp_file.close();
+
+                // 2. Mở kênh UDP và ném file tạm đi (Tái sử dụng RDT)
+                SOCKET udp_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+                sockaddr_in target_client_udp;
+                target_client_udp.sin_family = AF_INET;
+                target_client_udp.sin_port = htons(2122);
+                inet_pton(AF_INET, client_ip, &target_client_udp.sin_addr);
+
+                if (sendFileUDP(udp_sock, target_client_udp, temp_filename)) {
+                    response = "226 Directory send OK.\r\n";
+                } else {
+                    response = "550 Failed to send directory list.\r\n";
+                }
                 send(client_sock, response.c_str(), response.length(), 0);
+                closesocket(udp_sock);
+
+                // 3. "Phi tang" file tạm sau khi truyền xong
+                fs::remove(temp_filename);
             }
 
             // 4. NHÓM CHỈNH SỬA & XÓA FILE (4 lệnh)
@@ -379,12 +427,15 @@ int main() {
                 } catch (...) { response = "550 Rename failed.\r\n"; }
                 send(client_sock, response.c_str(), response.length(), 0);
             }
+            // 4. NHÓM CHỈNH SỬA & XÓA FILE (Tiếp tục)
             else if (cmd == "ABOR") {
+                // Để ABOR thực sự ngắt được UDP giữa chừng, Server phải chạy đa luồng.
+                // Ở phiên bản đơn luồng này, ta giả lập ngắt phiên thành công.
                 response = "226 Abort successful.\r\n";
                 send(client_sock, response.c_str(), response.length(), 0);
             }
 
-            // 5. NHÓM TRẠNG THÁI VÀ THÔNG TIN FILE (4 lệnh)
+            // 5. NHÓM TRẠNG THÁI VÀ THÔNG TIN FILE (Tiếp tục)
             else if (cmd == "SIZE") {
                 try {
                     if (fs::exists(arg) && !fs::is_directory(arg)) {
@@ -394,7 +445,20 @@ int main() {
                 send(client_sock, response.c_str(), response.length(), 0);
             }
             else if (cmd == "MDTM") {
-                response = "213 20260807234000\r\n"; 
+                try {
+                    if (fs::exists(arg)) {
+                        // Lấy thời gian chỉnh sửa cuối của file bằng C++17
+                        auto ftime = fs::last_write_time(arg);
+                        auto sctp = chrono::time_point_cast<chrono::system_clock::duration>(ftime - fs::file_time_type::clock::now() + chrono::system_clock::now());
+                        time_t cftime = chrono::system_clock::to_time_t(sctp);
+                        tm* t = localtime(&cftime);
+                        
+                        // Format chuẩn YYYYMMDDhhmmss của FTP
+                        char timeBuf[20];
+                        strftime(timeBuf, sizeof(timeBuf), "%Y%m%d%H%M%S", t);
+                        response = "213 " + string(timeBuf) + "\r\n";
+                    } else { response = "550 File not found.\r\n"; }
+                } catch (...) { response = "550 Could not get file time.\r\n"; }
                 send(client_sock, response.c_str(), response.length(), 0);
             }
             else if (cmd == "STAT") {
@@ -406,7 +470,7 @@ int main() {
                 send(client_sock, response.c_str(), response.length(), 0);
             }
 
-            // 6. NHÓM CẤU HÌNH & XÁC MINH NÂNG CAO (5 lệnh)
+            // 6. NHÓM CẤU HÌNH & XÁC MINH NÂNG CAO
             else if (cmd == "TYPE") {
                 if (arg == "A" || arg == "I") {
                     transfer_type = arg[0];
@@ -422,27 +486,55 @@ int main() {
                 send(client_sock, response.c_str(), response.length(), 0);
             }
             else if (cmd == "PORT") {
-                response = "200 PORT command successful.\r\n";
+                // Tách tham số h1,h2,h3,h4,p1,p2 để tính ra Port của Client
+                int h1, h2, h3, h4, p1, p2;
+                if (sscanf(arg.c_str(), "%d,%d,%d,%d,%d,%d", &h1, &h2, &h3, &h4, &p1, &p2) == 6) {
+                    string active_ip = to_string(h1) + "." + to_string(h2) + "." + to_string(h3) + "." + to_string(h4);
+                    int active_port = (p1 * 256) + p2;
+                    response = "200 PORT command successful. Targeted " + active_ip + ":" + to_string(active_port) + "\r\n";
+                } else {
+                    response = "501 Syntax error in parameters.\r\n";
+                }
                 send(client_sock, response.c_str(), response.length(), 0);
             }
             else if (cmd == "PASV") {
+                // Giả lập mở port 2122 (127.0.0.1, Port: 8 * 256 + 74 = 2122)
                 response = "227 Entering Passive Mode (127,0,0,1,8,74).\r\n"; 
                 send(client_sock, response.c_str(), response.length(), 0);
             }
             else if (cmd == "HASH") {
-                response = "213 <mock_hash_value_for_" + arg + ">\r\n";
+                if (fs::exists(arg) && !fs::is_directory(arg)) {
+                    // Cài đặt băm SHA-256 bằng CryptoAPI của Windows (Đáp ứng tiêu chí không dùng thư viện ngoài)
+                    HCRYPTPROV hProv = 0;
+                    HCRYPTHASH hHash = 0;
+                    if (CryptAcquireContext(&hProv, NULL, NULL, PROV_RSA_AES, CRYPT_VERIFYCONTEXT) &&
+                        CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash)) {
+                        
+                        ifstream file(arg, ios::binary);
+                        char hash_buf[4096];
+                        while (file.read(hash_buf, sizeof(hash_buf)) || file.gcount() > 0) {
+                            CryptHashData(hHash, (BYTE*)hash_buf, (DWORD)file.gcount(), 0);
+                        }
+                        
+                        BYTE hashVal[32];
+                        DWORD hashLen = sizeof(hashVal);
+                        CryptGetHashParam(hHash, HP_HASHVAL, hashVal, &hashLen, 0);
+                        
+                        stringstream hexStream;
+                        hexStream << hex << setfill('0');
+                        for (DWORD i = 0; i < hashLen; i++) {
+                            hexStream << setw(2) << (int)hashVal[i];
+                        }
+                        
+                        response = "213 SHA-256 " + hexStream.str() + "\r\n";
+                        CryptDestroyHash(hHash);
+                        CryptReleaseContext(hProv, 0);
+                    } else { response = "550 Hash calculation failed.\r\n"; }
+                } else {
+                    response = "550 File not found.\r\n";
+                }
                 send(client_sock, response.c_str(), response.length(), 0);
-            }
-
-            // 7. LỆNH KHÔNG TỒN TẠI HOẶC GÕ SAI
-            else {
-                response = "502 Command not implemented.\r\n";
-                send(client_sock, response.c_str(), response.length(), 0);
-            }
-        }
-        closesocket(client_sock);
-    }
-
+            }     
     closesocket(server_sock);
     WSACleanup();
     return 0;
