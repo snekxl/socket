@@ -91,6 +91,7 @@ void runCommandParser(SOCKET control_sock, const string& serverIP) {
                 cout << receiveReply(control_sock);
             }
         }
+    }
     
     // Đóng kênh UDP khi thoát vòng lặp
     closeUDPSocket(udpSocket);
