@@ -1,3 +1,4 @@
+#define _CRT_SECURE_NO_WARNINGS
 #include <iostream>
 #include <string>
 #include <vector>
@@ -56,9 +57,7 @@ uint16_t calculateChecksum(const RDTPacket& pkt) {
     return (uint16_t)~sum;
 }
 
-// =====================================================================
-// 2. HÀM GỬI FILE QUA UDP (DÀNH CHO LỆNH RETR)
-// =====================================================================
+//UDP
 bool sendFileUDP(SOCKET udpSocket, sockaddr_in clientAddr, const string& filePath) {
     ifstream file(filePath, ios::binary);
     if (!file.is_open()) {
@@ -77,8 +76,6 @@ bool sendFileUDP(SOCKET udpSocket, sockaddr_in clientAddr, const string& filePat
         packet.header.payload_len = file.gcount();
         packet.header.seq_num = current_seq;
         packet.header.flags = FLAG_DATA;
-        packet.header.checksum = 0;
-        packet.header.checksum = calculateChecksum(packet);
 
         bool ack_received = false;
         int retries = 0;
@@ -94,7 +91,7 @@ bool sendFileUDP(SOCKET udpSocket, sockaddr_in clientAddr, const string& filePat
             
             if (recvBytes > 0 && (ack_pkt.header.flags & FLAG_ACK) && ack_pkt.header.ack_num == current_seq) {
                 ack_received = true;
-                current_seq = 1 - current_seq; // Đảo bit
+                current_seq = 1 - current_seq; 
             } else {
                 retries++;
             }
@@ -107,11 +104,9 @@ bool sendFileUDP(SOCKET udpSocket, sockaddr_in clientAddr, const string& filePat
         }
     }
 
-    // Gửi gói FIN báo kết thúc
+    packet.header.seq_num = current_seq;
     packet.header.flags = FLAG_FIN;
     packet.header.payload_len = 0;
-    packet.header.checksum = 0;
-    packet.header.checksum = calculateChecksum(packet);
     sendto(udpSocket, (char*)&packet, sizeof(packet), 0, (sockaddr*)&clientAddr, sizeof(clientAddr));
 
     file.close();
@@ -120,7 +115,7 @@ bool sendFileUDP(SOCKET udpSocket, sockaddr_in clientAddr, const string& filePat
 }
 
 // =====================================================================
-// 3. HÀM NHẬN FILE QUA UDP (DÀNH CHO LỆNH STOR, APPE, STOU)
+// 3. HÀM NHẬN FILE QUA UDP (DÀNH CHO LỆNH STOR)
 // =====================================================================
 bool receiveFileUDP(SOCKET udpSocket, const string& savePath, bool append = false) {
     ofstream file;
@@ -146,31 +141,29 @@ bool receiveFileUDP(SOCKET udpSocket, const string& savePath, bool append = fals
         int bytes_received = recvfrom(udpSocket, (char*)&packet, sizeof(packet), 0, (sockaddr*)&clientAddr, &clientLen);
 
         if (bytes_received > 0) {
-            uint16_t received_checksum = packet.header.checksum;
-            packet.header.checksum = 0; 
-
-            if (calculateChecksum(packet) == received_checksum && packet.header.seq_num == expected_seq) {
-                if (packet.header.flags & FLAG_DATA) {
-                    file.write(packet.payload, packet.header.payload_len);
-                }
-                if (packet.header.flags & FLAG_FIN) {
-                    is_finished = true;
-                }
-
+            if (packet.header.flags & FLAG_FIN) {
                 RDTPacket ack_pkt = {0};
-                ack_pkt.header.ack_num = expected_seq;
-                ack_pkt.header.flags = FLAG_ACK;
-                ack_pkt.header.checksum = calculateChecksum(ack_pkt);
+                ack_pkt.header.flags = FLAG_ACK | FLAG_FIN;
+                ack_pkt.header.ack_num = packet.header.seq_num;
                 sendto(udpSocket, (char*)&ack_pkt, sizeof(ack_pkt), 0, (sockaddr*)&clientAddr, sizeof(clientAddr));
-
-                expected_seq = 1 - expected_seq;
+                is_finished = true;
+                break;
             }
-            else if (packet.header.seq_num != expected_seq) {
+
+            if (packet.header.flags & FLAG_DATA) {
                 RDTPacket ack_pkt = {0};
-                ack_pkt.header.ack_num = 1 - expected_seq; 
                 ack_pkt.header.flags = FLAG_ACK;
-                ack_pkt.header.checksum = calculateChecksum(ack_pkt);
-                sendto(udpSocket, (char*)&ack_pkt, sizeof(ack_pkt), 0, (sockaddr*)&clientAddr, sizeof(clientAddr));
+
+                if (packet.header.seq_num == expected_seq) {
+                    file.write(packet.payload, packet.header.payload_len);
+                    ack_pkt.header.ack_num = expected_seq;
+                    sendto(udpSocket, (char*)&ack_pkt, sizeof(ack_pkt), 0, (sockaddr*)&clientAddr, sizeof(clientAddr));
+                    expected_seq = 1 - expected_seq;
+                }
+                else {
+                    ack_pkt.header.ack_num = packet.header.seq_num; 
+                    sendto(udpSocket, (char*)&ack_pkt, sizeof(ack_pkt), 0, (sockaddr*)&clientAddr, sizeof(clientAddr));
+                }
             }
         }
     }
@@ -179,7 +172,6 @@ bool receiveFileUDP(SOCKET udpSocket, const string& savePath, bool append = fals
     cout << "[+] Da nhan va luu file thanh cong." << endl;
     return true;
 }
-
 // =====================================================================
 // 4. HÀM MAIN: KÊNH ĐIỀU KHIỂN TCP VÀ TỔNG ĐÀI ĐỊNH TUYẾN 28 LỆNH
 // =====================================================================
