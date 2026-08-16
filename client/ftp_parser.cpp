@@ -74,7 +74,8 @@ void runCommandParser(SOCKET control_sock, const string& serverIP) {
 
             if (command == "RETR" && !argument.empty()) {
                 cout << "[*] Chuan bi nhan file: " << argument << " qua UDP..." << endl;
-                receiveFileUDP(udpSocket, DATA_PORT, argument);
+                // Truyền thêm serverIP và DATA_PORT vào
+                receiveFileUDP(udpSocket, DATA_PORT, serverIP, DATA_PORT, argument);
                 cout << receiveReply(control_sock);
             } 
             else if (command == "STOR" && !argument.empty()) {
@@ -84,10 +85,8 @@ void runCommandParser(SOCKET control_sock, const string& serverIP) {
             }
             else if (command == "LIST" || command == "NLST") {
                 cout << "[*] Dang nhan danh sach thu muc qua UDP..." << endl;
-                
-                // ĐÂY LÀ HÀM HỨNG FILE BỊ THIẾU Ở BẢN TRƯỚC CỦA BẠN
-                receiveFileUDP(udpSocket, DATA_PORT, "LIST_RESULT.txt");
-                
+                // Truyền thêm serverIP và DATA_PORT vào
+                receiveFileUDP(udpSocket, DATA_PORT, serverIP, DATA_PORT, "LIST_RESULT.txt");
                 cout << receiveReply(control_sock);
             }
             
