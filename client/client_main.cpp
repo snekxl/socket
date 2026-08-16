@@ -19,17 +19,17 @@ int main() {
     }
 
     string serverIP = "127.0.0.1";
-    int serverPort = 2121; 
+    int serverPort = 2121;
 
     if (connectToServer(control_sock, serverIP, serverPort)) {
-        // Truyền thêm serverIP vào để UDP biết địa chỉ mà đẩy file tới
         runCommandParser(control_sock, serverIP);
-    } else {
+    }
+    else {
         cout << "[-] Vui long kiem tra xem Server da bat chua hoac xem lai IP/Port." << endl;
     }
 
     closeTCPSocket(control_sock);
     cout << "[*] Client da dong hoan toan." << endl;
-    
+
     return 0;
 }
