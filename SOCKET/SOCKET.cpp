@@ -237,6 +237,9 @@ int main() {
             string response = "";
 
             string cmd = request.substr(0, request.find(' ')); 
+            
+            cmd.erase(cmd.find_last_not_of(" \n\r\t") + 1); 
+            
             string arg = "";
             if (request.find(' ') != string::npos) {
                 arg = request.substr(request.find(' ') + 1);
