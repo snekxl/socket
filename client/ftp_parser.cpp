@@ -29,7 +29,8 @@ void runCommandParser(SOCKET control_sock, const string& serverIP) {
     cout << "=== HYBRID FTP CLIENT ===" << endl;
     cout << "[+] Da ket noi Control Channel. Nhap lenh FTP (vd: USER, CWD, RETR, STOR, QUIT)..." << endl;
 
-    cout << receiveReply(control_sock); // Hứng câu chào 220 Welcome
+    // Hứng câu chào 220 Welcome từ Server
+    cout << receiveReply(control_sock);
 
     while (true) {
         cout << "ftp> ";
@@ -37,28 +38,13 @@ void runCommandParser(SOCKET control_sock, const string& serverIP) {
 
         if (userInput.empty()) continue;
 
+        // Phân tích câu lệnh
         stringstream ss(userInput);
         string command, argument;
         ss >> command;
         getline(ss, argument);
         if (!argument.empty() && argument[0] == ' ') {
             argument.erase(0, 1);
-        }
-
-        // --- TRƯỚC KHI GỬI LỆNH: NẾU LÀ LỆNH TẢI FILE THÌ PHẢI MỞ CỬA UDP TRƯỚC ---
-        SOCKET udpSocket = INVALID_SOCKET;
-        if (command == "RETR" || command == "LIST" || command == "NLST" || command == "STOR" || command == "APPE" || command == "STOU") {
-            udpSocket = createUDPSocket();
-            
-            // Nếu là thao tác lấy file VỀ (Server -> Client), bắt Client phải dọn chỗ BIND port nằm chờ luôn.
-            if (command == "RETR" || command == "LIST" || command == "NLST") {
-                sockaddr_in localAddr;
-                localAddr.sin_family = AF_INET;
-                localAddr.sin_addr.s_addr = INADDR_ANY;
-                localAddr.sin_port = htons(DATA_PORT);
-                bind(udpSocket, (sockaddr*)&localAddr, sizeof(localAddr));
-                cout << "[*] Client da san sang hung du lieu tren port UDP " << DATA_PORT << "..." << endl;
-            }
         }
 
         // 1. Gửi lệnh qua kênh TCP
@@ -72,7 +58,7 @@ void runCommandParser(SOCKET control_sock, const string& serverIP) {
             break;
         }
 
-        // 2. Chờ Server phản hồi (Mã 150)
+        // 2. Chờ Server phản hồi lệnh vừa gửi
         string reply = receiveReply(control_sock);
         if (reply.empty()) {
             cerr << "[-] Loi: Mat ket noi voi Server." << endl;
@@ -80,8 +66,12 @@ void runCommandParser(SOCKET control_sock, const string& serverIP) {
         }
         cout << reply;
 
-        // 3. Xử lý nhận/gửi dữ liệu qua luồng UDP đã mở
+        // 3. Xử lý rẽ nhánh mở kênh UDP
         if (reply.substr(0, 3) == "150") {
+            
+            // TẠO SOCKET UDP MỚI MỖI LẦN TRUYỀN (Chống lỗi kẹt Port)
+            SOCKET udpSocket = createUDPSocket();
+
             if (command == "RETR" && !argument.empty()) {
                 cout << "[*] Chuan bi nhan file: " << argument << " qua UDP..." << endl;
                 receiveFileUDP(udpSocket, DATA_PORT, argument);
@@ -94,14 +84,15 @@ void runCommandParser(SOCKET control_sock, const string& serverIP) {
             }
             else if (command == "LIST" || command == "NLST") {
                 cout << "[*] Dang nhan danh sach thu muc qua UDP..." << endl;
+                
+                // ĐÂY LÀ HÀM HỨNG FILE BỊ THIẾU Ở BẢN TRƯỚC CỦA BẠN
                 receiveFileUDP(udpSocket, DATA_PORT, "LIST_RESULT.txt");
+                
                 cout << receiveReply(control_sock);
             }
-        }
-
-        // Đóng kênh UDP sau mỗi lệnh để giải phóng Port
-        if (udpSocket != INVALID_SOCKET) {
+            
+            // HỦY SOCKET UDP ĐỂ GIẢI PHÓNG PORT 2122 CHO LẦN TEST TỚI
             closeUDPSocket(udpSocket);
         }
-    } 
+    }
 }
