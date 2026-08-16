@@ -28,7 +28,7 @@ struct RDTPacket {
 };
 #pragma pack(pop)
 SOCKET createUDPSocket();
-bool receiveFileUDP(SOCKET udpSocket, int localPort, const std::string& savePath);
+bool receiveFileUDP(SOCKET udpSocket, int localPort, const std::string& serverIP, int serverPort, const std::string& savePath);
 bool sendFileUDP(SOCKET udpSocket, const std::string& serverIP, int serverPort, const std::string& filePath);
 void closeUDPSocket(SOCKET udpSocket);
 
