@@ -73,7 +73,13 @@ void runCommandParser(SOCKET control_sock, const string& serverIP) {
         // 3. Xử lý rẽ nhánh nếu là lệnh truyền file (RETR hoặc STOR)
         // Dựa vào mã phản hồi 150 (Mở kênh dữ liệu) từ Server
         // 3. Xử lý rẽ nhánh nếu là lệnh CẦN MỞ KÊNH DỮ LIỆU
+        // 3. Xử lý rẽ nhánh nếu là lệnh CẦN MỞ KÊNH DỮ LIỆU
         if (reply.substr(0, 3) == "150") {
+            
+            // Đóng và tạo lại socket UDP mỗi lần truyền để không bao giờ bị lỗi kẹt Port 10022
+            closeUDPSocket(udpSocket);
+            udpSocket = createUDPSocket();
+
             if (command == "RETR" && !argument.empty()) {
                 cout << "[*] Chuan bi nhan file: " << argument << " qua UDP..." << endl;
                 receiveFileUDP(udpSocket, DATA_PORT, argument);
@@ -86,8 +92,10 @@ void runCommandParser(SOCKET control_sock, const string& serverIP) {
             }
             else if (command == "LIST" || command == "NLST") {
                 cout << "[*] Dang nhan danh sach thu muc qua UDP..." << endl;
-                // Gọi hàm nhận chuỗi văn bản qua RDT UDP (Cần thiết kế thêm hàm nhận text)
-                // receiveTextUDP(udpSocket, DATA_PORT);
+                
+                // GỌI HÀM HỨNG FILE UDP MÀ LÚC TRƯỚC BẠN CHƯA THÊM
+                receiveFileUDP(udpSocket, DATA_PORT, "LIST_RESULT.txt");
+                
                 cout << receiveReply(control_sock);
             }
         }
