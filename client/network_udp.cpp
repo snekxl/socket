@@ -17,9 +17,6 @@ SOCKET createUDPSocket() {
 // ==========================================================
 // HÀM NHẬN FILE (DÙNG CHO LỆNH RETR / LIST)
 // ==========================================================
-// ==========================================================
-// HÀM NHẬN FILE (DÙNG CHO LỆNH RETR / LIST)
-// ==========================================================
 bool receiveFileUDP(SOCKET udpSocket, int localPort, const string& serverIP, int serverPort, const string& savePath) {
     sockaddr_in localAddr;
     localAddr.sin_family = AF_INET;
@@ -30,8 +27,6 @@ bool receiveFileUDP(SOCKET udpSocket, int localPort, const string& serverIP, int
         cerr << "[-] Bind socket UDP that bai. Ma loi: " << WSAGetLastError() << endl;
         return false;
     }
-
-    // ĐÃ XÓA GÓI TIN "HELLO" TỰ HUỶ Ở ĐÂY
 
     ofstream file(savePath, ios::binary);
     if (!file.is_open()) {
@@ -44,7 +39,6 @@ bool receiveFileUDP(SOCKET udpSocket, int localPort, const string& serverIP, int
     uint32_t expected_seq = 0;
 
     while (true) {
-        // Khởi tạo sạch bộ nhớ (= 0) để không bao giờ bị dính rác
         RDTPacket packet = { 0 };
         int bytesReceived = recvfrom(udpSocket, (char*)&packet, sizeof(packet), 0, (sockaddr*)&senderAddr, &senderAddrSize);
 
@@ -74,13 +68,14 @@ bool receiveFileUDP(SOCKET udpSocket, int localPort, const string& serverIP, int
             }
         }
     }
+
     file.close();
     cout << "[+] Da nhan va luu file thanh cong." << endl;
     return true;
 }
 
 // ==========================================================
-// HÀM GỬI FILE (DÙNG CHO LỆNH STOR)
+// HÀM GỬI FILE (DÙNG CHO LỆNH STOR, STOU, APPE)
 // ==========================================================
 bool sendFileUDP(SOCKET udpSocket, const string& serverIP, int serverPort, const string& filePath) {
     ifstream file(filePath, ios::binary);
@@ -100,9 +95,12 @@ bool sendFileUDP(SOCKET udpSocket, const string& serverIP, int serverPort, const
     uint32_t current_seq = 0;
     RDTPacket packet = { 0 };
 
-    while (file.peek() != EOF) {
+    while (true) {
         file.read(packet.payload, PAYLOAD_SIZE);
-        packet.header.payload_len = file.gcount();
+        int bytesRead = file.gcount();
+        if (bytesRead <= 0) break; // Thoát vòng lặp khi hết dữ liệu
+
+        packet.header.payload_len = bytesRead;
         packet.header.seq_num = current_seq;
         packet.header.flags = FLAG_DATA;
 
@@ -138,7 +136,9 @@ bool sendFileUDP(SOCKET udpSocket, const string& serverIP, int serverPort, const
     packet.header.flags = FLAG_FIN;
     packet.header.payload_len = 0;
     sendto(udpSocket, (char*)&packet, sizeof(packet), 0, (sockaddr*)&serverAddr, sizeof(serverAddr));
-    Sleep(100);
+
+    Sleep(100); // CHỐNG RỚT GÓI FIN
+
     file.close();
     cout << "[+] Da gui file hoan tat qua giao thuc tin cay (RDT)." << endl;
     return true;
