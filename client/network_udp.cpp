@@ -34,7 +34,8 @@ SOCKET createUDPSocket() {
 // ==========================================================
 // HÀM NHẬN FILE (DÙNG CHO LỆNH RETR HOẶC SERVER NHẬN STOR)
 // ==========================================================
-bool receiveFileUDP(SOCKET udpSocket, int localPort, const string& savePath) {
+// 1. Đổi chữ ký hàm (Thêm serverIP và serverPort)
+bool receiveFileUDP(SOCKET udpSocket, int localPort, const string& serverIP, int serverPort, const string& savePath) {
     sockaddr_in localAddr;
     localAddr.sin_family = AF_INET;
     localAddr.sin_addr.s_addr = INADDR_ANY;
@@ -45,6 +46,19 @@ bool receiveFileUDP(SOCKET udpSocket, int localPort, const string& savePath) {
         cerr << "[-] Bind socket UDP that bai. Ma loi: " << WSAGetLastError() << endl;
         return false;
     }
+
+    // =========================================================
+    // CODE FIX LỖI DEADLOCK: GỬI GÓI "HELLO" ĐỂ KÍCH HOẠT SERVER
+    // =========================================================
+    sockaddr_in serverAddr;
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(serverPort);
+    inet_pton(AF_INET, serverIP.c_str(), &serverAddr.sin_addr);
+    
+    string hello_msg = "Hello";
+    sendto(udpSocket, hello_msg.c_str(), hello_msg.length(), 0, (sockaddr*)&serverAddr, sizeof(serverAddr));
+    cout << "[*] Da gui goi 'Hello' de danh thuc Server..." << endl;
+    // =========================================================
 
     ofstream file(savePath, ios::binary);
     if (!file.is_open()) {
@@ -57,6 +71,8 @@ bool receiveFileUDP(SOCKET udpSocket, int localPort, const string& savePath) {
     uint32_t expected_seq = 0; // Mong đợi nhận gói số 0 đầu tiên
 
     cout << "[*] Dang cho nhan du lieu tren port UDP " << localPort << "..." << endl;
+
+    // ... (Giữ nguyên toàn bộ vòng lặp while(true) phía dưới của bạn) ...
 
     while (true) {
         RDTPacket packet;
