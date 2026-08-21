@@ -9,7 +9,7 @@
 #include <chrono>
 #include <iomanip>
 #include <sstream>
-#include <wincrypt.h>
+#include <wincrypt.h> 
 #include <thread>
 #include <mutex>
 #include <map>
@@ -43,6 +43,9 @@ struct RDTPacket {
 // =====================================================================
 // HÀM GỬI FILE QUA UDP (DÀNH CHO LỆNH RETR / LIST)
 // =====================================================================
+// =====================================================================
+// HÀM GỬI FILE QUA UDP (DÀNH CHO LỆNH RETR / LIST) - BẢN SERVER
+// =====================================================================
 bool sendFileUDP(SOCKET udpSocket, sockaddr_in clientAddr, const string& filePath) {
     ifstream file(filePath, ios::binary);
     if (!file.is_open()) {
@@ -50,16 +53,23 @@ bool sendFileUDP(SOCKET udpSocket, sockaddr_in clientAddr, const string& filePat
         return false;
     }
 
+    file.seekg(0, ios::end);
+    long total_size = file.tellg();
+    file.seekg(0, ios::beg);
+    long bytes_acked = 0;
+
     DWORD timeout = 1000;
     setsockopt(udpSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
 
     uint32_t current_seq = 0;
     RDTPacket packet = { 0 };
 
+    cout << "[*] Bat dau gui file toi Client (" << total_size << " bytes)..." << endl;
+
     while (true) {
         file.read(packet.payload, PAYLOAD_SIZE);
         int bytesRead = file.gcount();
-        if (bytesRead <= 0) break; // Thoát nếu hết file
+        if (bytesRead <= 0) break;
 
         packet.header.payload_len = bytesRead;
         packet.header.seq_num = current_seq;
@@ -68,7 +78,7 @@ bool sendFileUDP(SOCKET udpSocket, sockaddr_in clientAddr, const string& filePat
         bool ack_received = false;
         int retries = 0;
 
-        while (!ack_received && retries < 5) {
+        while (!ack_received && retries < 20) {
             sendto(udpSocket, (char*)&packet, sizeof(packet), 0, (sockaddr*)&clientAddr, sizeof(clientAddr));
 
             RDTPacket ack_pkt;
@@ -77,9 +87,15 @@ bool sendFileUDP(SOCKET udpSocket, sockaddr_in clientAddr, const string& filePat
 
             int recvBytes = recvfrom(udpSocket, (char*)&ack_pkt, sizeof(ack_pkt), 0, (sockaddr*)&fromAddr, &fromLen);
 
-            if (recvBytes > 0 && (ack_pkt.header.flags & FLAG_ACK) && ack_pkt.header.ack_num == current_seq) {
-                ack_received = true;
-                current_seq = 1 - current_seq;
+            if (recvBytes > 0) {
+                if ((ack_pkt.header.flags & FLAG_ACK) && ack_pkt.header.ack_num == current_seq) {
+                    ack_received = true;
+                    current_seq = 1 - current_seq;
+
+                    bytes_acked += bytesRead;
+                    int percent = (total_size > 0) ? (bytes_acked * 100LL / total_size) : 100;
+                    cout << "\r[>] Tien do: " << percent << "% (" << bytes_acked << "/" << total_size << " bytes)   " << flush;
+                }
             }
             else {
                 retries++;
@@ -87,7 +103,7 @@ bool sendFileUDP(SOCKET udpSocket, sockaddr_in clientAddr, const string& filePat
         }
 
         if (!ack_received) {
-            cerr << "[-] Ngat ket noi do Timeout qua 5 lan.\n";
+            cerr << "\n[-] Ngat ket noi do Timeout qua 20 lan.\n";
             file.close();
             return false;
         }
@@ -98,10 +114,10 @@ bool sendFileUDP(SOCKET udpSocket, sockaddr_in clientAddr, const string& filePat
     packet.header.payload_len = 0;
     sendto(udpSocket, (char*)&packet, sizeof(packet), 0, (sockaddr*)&clientAddr, sizeof(clientAddr));
 
-    Sleep(100); // CHỐNG RỚT GÓI FIN
+    Sleep(100);
 
     file.close();
-    cout << "[+] Da gui file hoan tat qua RDT." << endl;
+    cout << "\n[+] Da gui file hoan tat qua RDT." << endl;
     return true;
 }
 
@@ -120,6 +136,7 @@ bool receiveFileUDP(SOCKET udpSocket, const string& savePath, bool append = fals
 
     uint32_t expected_seq = 0;
     bool is_finished = false;
+    long bytes_received_total = 0;
 
     DWORD timeout = 2000;
     setsockopt(udpSocket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
@@ -150,6 +167,9 @@ bool receiveFileUDP(SOCKET udpSocket, const string& savePath, bool append = fals
                     ack_pkt.header.ack_num = expected_seq;
                     sendto(udpSocket, (char*)&ack_pkt, sizeof(ack_pkt), 0, (sockaddr*)&clientAddr, sizeof(clientAddr));
                     expected_seq = 1 - expected_seq;
+
+                    bytes_received_total += packet.header.payload_len;
+                    cout << "\r[>] Da nhan duoc: " << bytes_received_total << " bytes tu Client..." << flush;
                 }
                 else {
                     ack_pkt.header.ack_num = packet.header.seq_num;
@@ -160,13 +180,10 @@ bool receiveFileUDP(SOCKET udpSocket, const string& savePath, bool append = fals
     }
 
     file.close();
-    cout << "[+] Da nhan va luu file thanh cong." << endl;
+    cout << "\n[+] Da nhan va luu file thanh cong." << endl;
     return true;
 }
 
-// =====================================================================
-// HÀM MAIN: KÊNH TCP & TỔNG ĐÀI ĐỊNH TUYẾN 28 LỆNH
-// =====================================================================
 // =====================================================================
 // HỆ THỐNG QUẢN LÝ ĐA LUỒNG VÀ CONNECTED-CLIENT TABLE
 // =====================================================================
@@ -177,8 +194,7 @@ void printClientTable() {
     cout << "\n=== BANG DANH SACH CLIENT DANG KET NOI (CONNECTED CLIENT TABLE) ===\n";
     if (connected_clients.empty()) {
         cout << "[Trong]\n";
-    }
-    else {
+    } else {
         for (auto const& [sock, ip] : connected_clients) {
             cout << " -> Client IP: " << ip << " | Control Socket ID: " << sock << "\n";
         }
@@ -191,12 +207,12 @@ void handleClientSession(SOCKET client_sock, string client_ip) {
     string welcome_msg = "220 Welcome to Hybrid FTP Server\r\n";
     send(client_sock, welcome_msg.c_str(), welcome_msg.length(), 0);
 
-    string rename_from_path = "";
-    char transfer_type = 'I';
-    char transfer_mode = 'S';
+    string rename_from_path = ""; 
+    char transfer_type = 'I'; 
+    char transfer_mode = 'S'; 
 
     char buffer[1024];
-    while (true) {
+    while (true) { 
         memset(buffer, 0, sizeof(buffer));
         int bytes_received = recv(client_sock, buffer, sizeof(buffer) - 1, 0);
 
@@ -206,20 +222,20 @@ void handleClientSession(SOCKET client_sock, string client_ip) {
         cout << "[CLIENT " << client_ip << ":" << client_sock << "] " << request;
         string response = "";
 
-        string cmd = request.substr(0, request.find(' '));
-        cmd.erase(cmd.find_last_not_of(" \n\r\t") + 1);
-
+        string cmd = request.substr(0, request.find(' ')); 
+        cmd.erase(cmd.find_last_not_of(" \n\r\t") + 1); 
+        
         string arg = "";
         if (request.find(' ') != string::npos) {
             arg = request.substr(request.find(' ') + 1);
-            arg.erase(arg.find_last_not_of(" \n\r\t") + 1);
+            arg.erase(arg.find_last_not_of(" \n\r\t") + 1); 
         }
 
         // --- TỔNG ĐÀI ĐỊNH TUYẾN 28 LỆNH ---
         if (cmd == "QUIT") {
             response = "221 Goodbye. Hen gap lai!\r\n";
             send(client_sock, response.c_str(), response.length(), 0);
-            break;
+            break; 
         }
         else if (cmd == "USER") {
             response = "331 Username OK, need password.\r\n";
@@ -243,18 +259,15 @@ void handleClientSession(SOCKET client_sock, string client_ip) {
                 if (fs::exists(arg) && fs::is_directory(arg)) {
                     fs::current_path(arg);
                     response = "250 Directory successfully changed.\r\n";
-                }
-                else { response = "550 Failed to change directory. Path not found.\r\n"; }
-            }
-            catch (...) { response = "550 System error.\r\n"; }
+                } else { response = "550 Failed to change directory. Path not found.\r\n"; }
+            } catch (...) { response = "550 System error.\r\n"; }
             send(client_sock, response.c_str(), response.length(), 0);
         }
         else if (cmd == "CDUP") {
             try {
                 fs::current_path(fs::current_path().parent_path());
                 response = "250 Directory successfully changed to parent.\r\n";
-            }
-            catch (...) { response = "550 Failed to change directory.\r\n"; }
+            } catch (...) { response = "550 Failed to change directory.\r\n"; }
             send(client_sock, response.c_str(), response.length(), 0);
         }
         else if (cmd == "MKD") {
@@ -266,21 +279,30 @@ void handleClientSession(SOCKET client_sock, string client_ip) {
             try {
                 if (fs::remove(arg)) response = "250 Directory removed successfully.\r\n";
                 else response = "550 Remove failed (Directory not empty or not found).\r\n";
-            }
-            catch (...) { response = "550 Remove failed.\r\n"; }
+            } catch (...) { response = "550 Remove failed.\r\n"; }
             send(client_sock, response.c_str(), response.length(), 0);
         }
+        // ... (Các lệnh PWD, CWD, MKD... giữ nguyên) ...
+
         else if (cmd == "RETR") {
             response = "150 File okay. Dang mo kenh UDP tren cong 2122...\r\n";
             send(client_sock, response.c_str(), response.length(), 0);
 
+            // FIX RACE CONDITION: Chờ Client mở cổng 2122 xong
+            Sleep(100);
+
             SOCKET udp_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+            int bufferSize = 1024 * 1024;
+            setsockopt(udp_sock, SOL_SOCKET, SO_SNDBUF, (const char*)&bufferSize, sizeof(bufferSize));
+            setsockopt(udp_sock, SOL_SOCKET, SO_RCVBUF, (const char*)&bufferSize, sizeof(bufferSize));
+
             sockaddr_in target_client_udp;
             target_client_udp.sin_family = AF_INET;
             target_client_udp.sin_port = htons(2122);
             inet_pton(AF_INET, client_ip.c_str(), &target_client_udp.sin_addr);
 
             if (sendFileUDP(udp_sock, target_client_udp, arg)) {
+             
                 response = "226 Transfer complete.\r\n";
             }
             else { response = "550 File unavailable hoac loi doc file.\r\n"; }
@@ -288,22 +310,27 @@ void handleClientSession(SOCKET client_sock, string client_ip) {
             closesocket(udp_sock);
         }
         else if (cmd == "STOR" || cmd == "APPE" || cmd == "STOU") {
-            response = "150 Ok to send data. Dang mo kenh UDP tren cong 2122...\r\n";
-            send(client_sock, response.c_str(), response.length(), 0);
-
             string save_name = arg;
-            bool is_append = false;
-
+            bool is_append = (cmd == "APPE");
             if (cmd == "STOU") save_name = "unique_" + to_string(time(0)) + ".bin";
-            if (cmd == "APPE") is_append = true;
 
+            // 1. CHUẨN BỊ VÀ MỞ CỔNG (BIND) TRƯỚC!
             SOCKET udp_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+            int bufferSize = 1024 * 1024; // Nới bộ đệm 1MB
+            setsockopt(udp_sock, SOL_SOCKET, SO_SNDBUF, (const char*)&bufferSize, sizeof(bufferSize));
+            setsockopt(udp_sock, SOL_SOCKET, SO_RCVBUF, (const char*)&bufferSize, sizeof(bufferSize));
+
             sockaddr_in udp_server_addr;
             udp_server_addr.sin_family = AF_INET;
             udp_server_addr.sin_port = htons(2122);
             udp_server_addr.sin_addr.s_addr = INADDR_ANY;
             bind(udp_sock, (sockaddr*)&udp_server_addr, sizeof(udp_server_addr));
 
+            // 2. MỞ CỔNG XONG MỚI BÁO CLIENT GỬI DỮ LIỆU
+            response = "150 Ok to send data. Dang mo kenh UDP tren cong 2122...\r\n";
+            send(client_sock, response.c_str(), response.length(), 0);
+
+            // 3. HỨNG DỮ LIỆU
             if (receiveFileUDP(udp_sock, save_name, is_append)) {
                 response = "226 Transfer complete.\r\n";
             }
@@ -314,6 +341,11 @@ void handleClientSession(SOCKET client_sock, string client_ip) {
         else if (cmd == "LIST" || cmd == "NLST") {
             response = "150 Opening data connection for directory list...\r\n";
             send(client_sock, response.c_str(), response.length(), 0);
+
+            // FIX RACE CONDITION: Chờ Client mở cổng 2122 xong
+            Sleep(100);
+
+            //... đoạn tạo file text và gửi udp_sock giữ nguyên ...
 
             string temp_filename = "temp_dir_list.txt";
             ofstream temp_file(temp_filename);
@@ -337,6 +369,13 @@ void handleClientSession(SOCKET client_sock, string client_ip) {
             temp_file.close();
 
             SOCKET udp_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+
+            // --- FIX 27MB: NỚI RỘNG BỘ ĐỆM LÊN 1MB ---
+            int bufferSize = 1024 * 1024;
+            setsockopt(udp_sock, SOL_SOCKET, SO_SNDBUF, (const char*)&bufferSize, sizeof(bufferSize));
+            setsockopt(udp_sock, SOL_SOCKET, SO_RCVBUF, (const char*)&bufferSize, sizeof(bufferSize));
+            // ----------------------------------------
+
             sockaddr_in target_client_udp;
             target_client_udp.sin_family = AF_INET;
             target_client_udp.sin_port = htons(2122);
@@ -354,16 +393,14 @@ void handleClientSession(SOCKET client_sock, string client_ip) {
             try {
                 if (fs::remove(arg)) response = "250 File deleted successfully.\r\n";
                 else response = "550 File not found or access denied.\r\n";
-            }
-            catch (...) { response = "550 Delete failed.\r\n"; }
+            } catch (...) { response = "550 Delete failed.\r\n"; }
             send(client_sock, response.c_str(), response.length(), 0);
         }
         else if (cmd == "RNFR") {
             if (fs::exists(arg)) {
                 rename_from_path = arg;
                 response = "350 File exists, ready for destination name.\r\n";
-            }
-            else { response = "550 File not found.\r\n"; }
+            } else { response = "550 File not found.\r\n"; }
             send(client_sock, response.c_str(), response.length(), 0);
         }
         else if (cmd == "RNTO") {
@@ -371,11 +408,9 @@ void handleClientSession(SOCKET client_sock, string client_ip) {
                 if (!rename_from_path.empty()) {
                     fs::rename(rename_from_path, arg);
                     response = "250 File renamed successfully.\r\n";
-                    rename_from_path = "";
-                }
-                else { response = "503 Bad sequence of commands (Use RNFR first).\r\n"; }
-            }
-            catch (...) { response = "550 Rename failed.\r\n"; }
+                    rename_from_path = ""; 
+                } else { response = "503 Bad sequence of commands (Use RNFR first).\r\n"; }
+            } catch (...) { response = "550 Rename failed.\r\n"; }
             send(client_sock, response.c_str(), response.length(), 0);
         }
         else if (cmd == "ABOR") {
@@ -386,10 +421,8 @@ void handleClientSession(SOCKET client_sock, string client_ip) {
             try {
                 if (fs::exists(arg) && !fs::is_directory(arg)) {
                     response = "213 " + to_string(fs::file_size(arg)) + "\r\n";
-                }
-                else { response = "550 File not found.\r\n"; }
-            }
-            catch (...) { response = "550 Could not get file size.\r\n"; }
+                } else { response = "550 File not found.\r\n"; }
+            } catch (...) { response = "550 Could not get file size.\r\n"; }
             send(client_sock, response.c_str(), response.length(), 0);
         }
         else if (cmd == "MDTM") {
@@ -402,10 +435,8 @@ void handleClientSession(SOCKET client_sock, string client_ip) {
                     char timeBuf[20];
                     strftime(timeBuf, sizeof(timeBuf), "%Y%m%d%H%M%S", t);
                     response = "213 " + string(timeBuf) + "\r\n";
-                }
-                else { response = "550 File not found.\r\n"; }
-            }
-            catch (...) { response = "550 Could not get file time.\r\n"; }
+                } else { response = "550 File not found.\r\n"; }
+            } catch (...) { response = "550 Could not get file time.\r\n"; }
             send(client_sock, response.c_str(), response.length(), 0);
         }
         else if (cmd == "STAT") {
@@ -442,17 +473,15 @@ void handleClientSession(SOCKET client_sock, string client_ip) {
                     response = "213 SHA-256 " + hexStream.str() + "\r\n";
                     CryptDestroyHash(hHash);
                     CryptReleaseContext(hProv, 0);
-                }
-                else { response = "550 Hash calculation failed.\r\n"; }
-            }
-            else { response = "550 File not found.\r\n"; }
+                } else { response = "550 Hash calculation failed.\r\n"; }
+            } else { response = "550 File not found.\r\n"; }
             send(client_sock, response.c_str(), response.length(), 0);
         }
         else {
             response = "502 Command not implemented.\r\n";
             send(client_sock, response.c_str(), response.length(), 0);
         }
-    }
+    } 
 
     // Khi vòng lặp bị phá vỡ (Client thoát), xóa khỏi danh sách và in lại bảng
     mtx.lock();
@@ -461,7 +490,7 @@ void handleClientSession(SOCKET client_sock, string client_ip) {
     printClientTable();
     mtx.unlock();
 
-    closesocket(client_sock);
+    closesocket(client_sock); 
 }
 
 int main() {
@@ -487,7 +516,7 @@ int main() {
         sockaddr_in client_info;
         int client_info_len = sizeof(client_info);
         SOCKET client_sock = accept(server_sock, (sockaddr*)&client_info, &client_info_len);
-
+        
         if (client_sock == INVALID_SOCKET) continue;
 
         char client_ip[INET_ADDRSTRLEN];
@@ -497,7 +526,7 @@ int main() {
         mtx.lock();
         connected_clients[client_sock] = string(client_ip);
         cout << "\n[He thong] Phat hien ket noi moi tu (" << client_ip << ")!" << endl;
-        printClientTable();
+        printClientTable(); 
         mtx.unlock();
 
         // KÍCH HOẠT ĐA LUỒNG: Tạo một luồng (thread) mới phục vụ riêng cho Client này
