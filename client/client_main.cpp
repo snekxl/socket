@@ -18,7 +18,7 @@ int main() {
         return 1;
     }
 
-    string serverIP = "127.0.0.1";
+    string serverIP = "26.78.126.80";
     int serverPort = 2121;
 
     if (connectToServer(control_sock, serverIP, serverPort)) {
