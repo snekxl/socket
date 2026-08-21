@@ -1,7 +1,0 @@
-<Solution>
-  <Configurations>
-    <Platform Name="x64" />
-    <Platform Name="x86" />
-  </Configurations>
-  <Project Path="SOCKET/SOCKET.vcxproj" Id="a2e86bed-335a-4b03-aa47-d67066fb7ca3" />
-</Solution>
